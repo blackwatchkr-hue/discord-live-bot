@@ -19,49 +19,71 @@ const client = new Client({
 
 let youtubeWasLive = false;
 
-// 유튜브 라이브 체크
+/**
+ * ⚡ 오늘 변경된 유튜브 방식에 완전 대응하는 새로운 라이브 감지 방식
+ * 1) /live 페이지 HTML 불러오기
+ * 2) "videoId":"xxxx" 패턴 검색
+ * 3) liveStreamingDetails API로 실제 라이브인지 최종 확인
+ */
 async function checkYoutubeLive() {
     try {
-        const url =
-            `https://www.googleapis.com/youtube/v3/search?part=snippet` +
-            `&channelId=${YOUTUBE_CHANNEL_ID}` +
-            `&eventType=live&type=video&key=${YOUTUBE_API_KEY}`;
+        const livePageUrl = `https://www.youtube.com/channel/${YOUTUBE_CHANNEL_ID}/live`;
+        const html = await axios.get(livePageUrl, {
+            headers: {
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+        });
 
-        const res = await axios.get(url);
+        // 1) HTML에서 videoId 추출
+        const regex = /"videoId":"(.*?)"/;
+        const match = html.data.match(regex);
 
-        if (res.data.items.length > 0) {
-            // videoId 추출
-            return res.data.items[0].id.videoId;
-        } else {
-            return null;
-        }
+        if (!match) return { live: false };
+
+        const videoId = match[1];
+
+        // 2) 해당 videoId 실제 라이브인지 검증
+        const apiUrl = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`;
+        const res = await axios.get(apiUrl);
+
+        const info = res.data.items?.[0]?.liveStreamingDetails;
+
+        if (!info || !info.actualStartTime)
+            return { live: false };
+
+        // 🔥 진짜 라이브인 경우
+        return {
+            live: true,
+            videoId
+        };
 
     } catch (err) {
-        console.error("유튜브 API 오류:", err.message);
-        return null;
+        console.error("유튜브 라이브 감지 오류:", err);
+        return { live: false };
     }
 }
 
 // 알림 체크
 async function checkStreams() {
-    const liveVideoId = await checkYoutubeLive();
+    const yt = await checkYoutubeLive();
     const channel = client.channels.cache.get(NOTICE_CHANNEL_ID);
 
-    if (liveVideoId && !youtubeWasLive) {
+    if (yt.live && !youtubeWasLive) {
         channel.send(
             `@everyone 🔴 **유튜브 라이브 시작!**\n` +
-            `https://www.youtube.com/watch?v=${liveVideoId}\n\n` +
+            `https://www.youtube.com/watch?v=${yt.videoId}\n\n` +
             `**치지직 방송도 보기:**\n` +
             `https://chzzk.naver.com/${CHZZK_CHANNEL_ID}`
         );
     }
 
-    youtubeWasLive = (liveVideoId !== null);
+    youtubeWasLive = yt.live;
 }
 
 client.once("ready", () => {
     console.log(`로그인 완료! ${client.user.tag}`);
-    setInterval(checkStreams, 30000);
+    setInterval(checkStreams, 30000); // 30초마다 체크
 });
 
 client.login(DISCORD_TOKEN);
